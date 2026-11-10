@@ -1,0 +1,505 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Generate Android Project & Source Code
+        run: |
+          mkdir -p app/src/main/java/com/orthoapp/dentist/camera
+          mkdir -p app/src/main/java/com/orthoapp/dentist/billing
+          mkdir -p app/src/main/res/values
+
+          # settings.gradle.kts
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "OrthoTeleConsult"
+          include(":app")
+          EOF
+
+          # build.gradle.kts (root)
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.3.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.23" apply false
+          }
+          EOF
+
+          # app/build.gradle.kts
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.orthoapp.dentist"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.orthoapp.dentist"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildFeatures {
+                  compose = true
+              }
+              composeOptions {
+                  kotlinCompilerExtensionVersion = "1.5.11"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.04.01")
+              implementation(composeBom)
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.activity:activity-compose:1.9.0")
+              implementation("androidx.compose.material:material-icons-extended")
+
+              val camerax = "1.3.3"
+              implementation("androidx.camera:camera-core:$camerax")
+              implementation("androidx.camera:camera-camera2:$camerax")
+              implementation("androidx.camera:camera-lifecycle:$camerax")
+              implementation("androidx.camera:camera-view:$camerax")
+              implementation("io.coil-kt:coil-compose:2.6.0")
+          }
+          EOF
+
+          # app/src/main/AndroidManifest.xml
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-feature android:name="android.hardware.camera" android:required="true" />
+              <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+              <application
+                  android:allowBackup="true"
+                  android:label="OrthoConsult"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # OrthoPhotoSpecs.kt
+          cat << 'EOF' > app/src/main/java/com/orthoapp/dentist/camera/OrthoPhotoSpecs.kt
+          package com.orthoapp.dentist.camera
+
+          import android.net.Uri
+
+          enum class PhotoCategory { EXTRAORAL, INTRAORAL }
+
+          enum class OverlayType {
+              FACIAL_FRONTAL_REST, FACIAL_FRONTAL_SMILE, FACIAL_PROFILE,
+              INTRAORAL_FRONTAL, INTRAORAL_BUCCAL_RIGHT, INTRAORAL_BUCCAL_LEFT,
+              INTRAORAL_OCCLUSAL_UPPER, INTRAORAL_OCCLUSAL_LOWER
+          }
+
+          data class OrthoPhotoStep(
+              val stepIndex: Int,
+              val title: String,
+              val category: PhotoCategory,
+              val instructions: String,
+              val clinicalTip: String,
+              val overlayType: OverlayType,
+              var capturedUri: Uri? = null
+          )
+
+          val standardOrthoPhotoSeries = listOf(
+              OrthoPhotoStep(1, "Facial Frontal (Rest)", PhotoCategory.EXTRAORAL, "Capture at eye level. Lips relaxed.", "Ensure ears are equally visible.", OverlayType.FACIAL_FRONTAL_REST),
+              OrthoPhotoStep(2, "Facial Frontal (Smile)", PhotoCategory.EXTRAORAL, "Natural social smile with maximum tooth display.", "Assess smile arc and incisor display.", OverlayType.FACIAL_FRONTAL_SMILE),
+              OrthoPhotoStep(3, "Facial Profile (90°)", PhotoCategory.EXTRAORAL, "True lateral view. Frankfort plane parallel to floor.", "Assess skeletal profile and chin position.", OverlayType.FACIAL_PROFILE),
+              OrthoPhotoStep(4, "Intraoral Frontal", PhotoCategory.INTRAORAL, "Retractors on. Teeth in full centric occlusion.", "Keep occlusal plane horizontal in center.", OverlayType.INTRAORAL_FRONTAL),
+              OrthoPhotoStep(5, "Intraoral Right Buccal", PhotoCategory.INTRAORAL, "Pull right cheek firmly back. Occlusion locked.", "Ensure 1st permanent molar and canine are crisp.", OverlayType.INTRAORAL_BUCCAL_RIGHT),
+              OrthoPhotoStep(6, "Intraoral Left Buccal", PhotoCategory.INTRAORAL, "Pull left cheek firmly back. Occlusion locked.", "Ensure 1st permanent molar and canine are crisp.", OverlayType.INTRAORAL_BUCCAL_LEFT),
+              OrthoPhotoStep(7, "Maxillary Occlusal", PhotoCategory.INTRAORAL, "45° mirror. Head tilted back. Defog mirror.", "Capture full arch from incisors to 2nd molars.", OverlayType.INTRAORAL_OCCLUSAL_UPPER),
+              OrthoPhotoStep(8, "Mandibular Occlusal", PhotoCategory.INTRAORAL, "45° mirror. Tongue lifted back. Defog mirror.", "Ensure lingual surfaces and incisal edges are clear.", OverlayType.INTRAORAL_OCCLUSAL_LOWER)
+          )
+          EOF
+
+          # CameraFramingOverlay.kt
+          cat << 'EOF' > app/src/main/java/com/orthoapp/dentist/camera/CameraFramingOverlay.kt
+          package com.orthoapp.dentist.camera
+
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.PathEffect
+          import androidx.compose.ui.graphics.drawscope.Stroke
+
+          @Composable
+          fun CameraFramingOverlay(overlayType: OverlayType, modifier: Modifier = Modifier) {
+              Canvas(modifier = modifier.fillMaxSize()) {
+                  val w = size.width
+                  val h = size.height
+                  val guideColor = Color(0xFF00E5FF).copy(alpha = 0.85f)
+                  val dashed = PathEffect.dashPathEffect(floatArrayOf(16f, 16f), 0f)
+                  val stroke = Stroke(width = 3f, pathEffect = dashed)
+                  val solidStroke = Stroke(width = 4f)
+
+                  when (overlayType) {
+                      OverlayType.FACIAL_FRONTAL_REST, OverlayType.FACIAL_FRONTAL_SMILE -> {
+                          drawLine(guideColor, Offset(w * 0.5f, h * 0.15f), Offset(w * 0.5f, h * 0.85f), strokeWidth = 3f, pathEffect = dashed)
+                          drawLine(guideColor, Offset(w * 0.25f, h * 0.38f), Offset(w * 0.75f, h * 0.38f), strokeWidth = 3f, pathEffect = dashed)
+                          drawOval(guideColor, Offset(w * 0.2f, h * 0.15f), Size(w * 0.6f, h * 0.7f), style = stroke)
+                      }
+                      OverlayType.FACIAL_PROFILE -> {
+                          drawLine(guideColor, Offset(w * 0.15f, h * 0.42f), Offset(w * 0.85f, h * 0.42f), strokeWidth = 3f, pathEffect = dashed)
+                          drawLine(guideColor, Offset(w * 0.65f, h * 0.15f), Offset(w * 0.65f, h * 0.85f), strokeWidth = 3f, pathEffect = dashed)
+                      }
+                      OverlayType.INTRAORAL_FRONTAL -> {
+                          drawLine(guideColor, Offset(w * 0.1f, h * 0.5f), Offset(w * 0.9f, h * 0.5f), strokeWidth = 4f)
+                          drawLine(guideColor, Offset(w * 0.5f, h * 0.35f), Offset(w * 0.5f, h * 0.65f), strokeWidth = 4f)
+                      }
+                      OverlayType.INTRAORAL_BUCCAL_RIGHT, OverlayType.INTRAORAL_BUCCAL_LEFT -> {
+                          drawLine(guideColor, Offset(w * 0.1f, h * 0.5f), Offset(w * 0.9f, h * 0.5f), strokeWidth = 3f)
+                          drawRoundRect(guideColor, Offset(w * 0.35f, h * 0.35f), Size(w * 0.35f, h * 0.3f), style = stroke)
+                      }
+                      OverlayType.INTRAORAL_OCCLUSAL_UPPER, OverlayType.INTRAORAL_OCCLUSAL_LOWER -> {
+                          val archPath = Path().apply {
+                              moveTo(w * 0.2f, h * 0.8f)
+                              cubicTo(w * 0.15f, h * 0.35f, w * 0.85f, h * 0.35f, w * 0.8f, h * 0.8f)
+                          }
+                          drawPath(path = archPath, color = guideColor, style = solidStroke)
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # OrthoCameraScreen.kt
+          cat << 'EOF' > app/src/main/java/com/orthoapp/dentist/camera/OrthoCameraScreen.kt
+          package com.orthoapp.dentist.camera
+
+          import android.content.Context
+          import android.net.Uri
+          import androidx.camera.core.*
+          import androidx.camera.lifecycle.ProcessCameraProvider
+          import androidx.camera.view.PreviewView
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.FlashOff
+          import androidx.compose.material.icons.filled.FlashOn
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalLifecycleOwner
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.viewinterop.AndroidView
+          import androidx.core.content.ContextCompat
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.Locale
+
+          @Composable
+          fun OrthoCameraScreen(
+              currentStep: OrthoPhotoStep,
+              onPhotoCaptured: (Uri) -> Unit,
+              modifier: Modifier = Modifier
+          ) {
+              val context = LocalContext.current
+              val lifecycleOwner = LocalLifecycleOwner.current
+              var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
+              var isTorchOn by remember { mutableStateOf(false) }
+              val imageCapture = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build() }
+
+              Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
+                  AndroidView(
+                      factory = { ctx ->
+                          val previewView = PreviewView(ctx)
+                          val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                          cameraProviderFuture.addListener({
+                              val cameraProvider = cameraProviderFuture.get()
+                              val preview = Preview.Builder().build().also {
+                                  it.setSurfaceProvider(previewView.surfaceProvider)
+                              }
+                              val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+                              try {
+                                  cameraProvider.unbindAll()
+                                  val camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageCapture)
+                                  cameraControl = camera.cameraControl
+                              } catch (e: Exception) {
+                                  e.printStackTrace()
+                              }
+                          }, ContextCompat.getMainExecutor(ctx))
+                          previewView
+                      },
+                      modifier = Modifier.fillMaxSize()
+                  )
+
+                  CameraFramingOverlay(overlayType = currentStep.overlayType)
+
+                  Card(
+                      modifier = Modifier.fillMaxWidth().padding(16.dp).align(Alignment.TopCenter),
+                      colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.75f)),
+                      shape = RoundedCornerShape(12.dp)
+                  ) {
+                      Column(modifier = Modifier.padding(14.dp)) {
+                          Text(text = "${currentStep.stepIndex}/8 • ${currentStep.title}", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                          Text(text = currentStep.instructions, color = Color.White, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp))
+                          Text(text = "Tip: ${currentStep.clinicalTip}", color = Color(0xFFFFD54F), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
+                      }
+                  }
+
+                  Row(
+                      modifier = Modifier.fillMaxWidth().padding(bottom = 36.dp, start = 24.dp, end = 24.dp).align(Alignment.BottomCenter),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      IconButton(
+                          onClick = {
+                              isTorchOn = !isTorchOn
+                              cameraControl?.enableTorch(isTorchOn)
+                          },
+                          modifier = Modifier.size(48.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                      ) {
+                          Icon(imageVector = if (isTorchOn) Icons.Default.FlashOn else Icons.Default.FlashOff, contentDescription = "Torch", tint = if (isTorchOn) Color(0xFFFFEB3B) else Color.White)
+                      }
+
+                      Box(
+                          modifier = Modifier.size(76.dp).clip(CircleShape).background(Color.White).border(4.dp, Color(0xFF00E5FF), CircleShape)
+                              .clickable {
+                                  val photoFile = File(context.cacheDir, "ORTHO_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())}.jpg")
+                                  val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
+                                  imageCapture.takePicture(
+                                      outputOptions,
+                                      ContextCompat.getMainExecutor(context),
+                                      object : ImageCapture.OnImageSavedCallback {
+                                          override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                                              onPhotoCaptured(output.savedUri ?: Uri.fromFile(photoFile))
+                                          }
+                                          override fun onError(exc: ImageCaptureException) {
+                                              exc.printStackTrace()
+                                          }
+                                      }
+                                  )
+                              },
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Box(modifier = Modifier.size(62.dp).clip(CircleShape).background(Color.White))
+                      }
+
+                      Spacer(modifier = Modifier.size(48.dp))
+                  }
+              }
+          }
+          EOF
+
+          # CasePackPurchaseScreen.kt
+          cat << 'EOF' > app/src/main/java/com/orthoapp/dentist/billing/CasePackPurchaseScreen.kt
+          package com.orthoapp.dentist.billing
+
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Stars
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+
+          data class CasePack(
+              val id: String,
+              val title: String,
+              val casesCount: Int,
+              val localizedPrice: String,
+              val pricePerCase: String,
+              val isPopular: Boolean = false
+          )
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun CasePackPurchaseScreen(
+              currentTokens: Int,
+              currencySymbol: String = "$",
+              onBuyPackSelected: (CasePack) -> Unit
+          ) {
+              val packs = listOf(
+                  CasePack("pack_3", "Starter Pack", 3, "$currencySymbol 180", "$currencySymbol 60 / case"),
+                  CasePack("pack_5", "Growth Pack", 5, "$currencySymbol 275", "$currencySymbol 55 / case", isPopular = true),
+                  CasePack("pack_10", "Clinic Pro Pack", 10, "$currencySymbol 480", "$currencySymbol 48 / case")
+              )
+
+              var selectedPack by remember { mutableStateOf(packs[1]) }
+
+              Scaffold(
+                  topBar = { TopAppBar(title = { Text("Case Tokens & Subscriptions") }) }
+              ) { paddingValues ->
+                  Column(modifier = Modifier.fillMaxSize().padding(paddingValues).padding(20.dp)) {
+                      Card(
+                          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                          shape = RoundedCornerShape(16.dp),
+                          modifier = Modifier.fillMaxWidth()
+                      ) {
+                          Row(modifier = Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                              Icon(imageVector = Icons.Default.Stars, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
+                              Spacer(modifier = Modifier.width(16.dp))
+                              Column {
+                                  Text(text = "Available Case Tokens", style = MaterialTheme.typography.labelLarge)
+                                  Text(text = "$currentTokens Cases", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                              }
+                          }
+                      }
+
+                      Spacer(modifier = Modifier.height(24.dp))
+                      Text(text = "Select a Case Pack", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                      Text(text = "Each case token covers 1 patient from complete diagnosis to full debonding. Tokens never expire.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 16.dp))
+
+                      packs.forEach { pack ->
+                          val isSelected = selectedPack.id == pack.id
+                          Card(
+                              modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(12.dp))
+                                  .border(if (isSelected) 2.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                                  .clickable { selectedPack = pack }
+                          ) {
+                              Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                  Column {
+                                      Text(text = pack.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                      Text(text = "${pack.casesCount} Complete Orthodontic Cases", style = MaterialTheme.typography.bodySmall)
+                                      Text(text = pack.pricePerCase, style = MaterialTheme.typography.labelSmall, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+                                  }
+                                  Text(text = pack.localizedPrice, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                              }
+                          }
+                      }
+
+                      Spacer(modifier = Modifier.weight(1f))
+                      Button(
+                          onClick = { onBuyPackSelected(selectedPack) },
+                          modifier = Modifier.fillMaxWidth().height(54.dp),
+                          shape = RoundedCornerShape(12.dp)
+                      ) {
+                          Text(text = "Purchase ${selectedPack.title} (${selectedPack.localizedPrice})", fontWeight = FontWeight.Bold)
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # MainActivity.kt
+          cat << 'EOF' > app/src/main/java/com/orthoapp/dentist/MainActivity.kt
+          package com.orthoapp.dentist
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.runtime.*
+          import com.orthoapp.dentist.billing.CasePackPurchaseScreen
+          import com.orthoapp.dentist.camera.OrthoCameraScreen
+          import com.orthoapp.dentist.camera.standardOrthoPhotoSeries
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      var currentScreen by remember { mutableStateOf("billing") }
+                      var currentPhotoStep by remember { mutableStateOf(0) }
+
+                      when (currentScreen) {
+                          "billing" -> {
+                              CasePackPurchaseScreen(
+                                  currentTokens = 1,
+                                  currencySymbol = "$",
+                                  onBuyPackSelected = { currentScreen = "camera" }
+                              )
+                          }
+                          "camera" -> {
+                              OrthoCameraScreen(
+                                  currentStep = standardOrthoPhotoSeries[currentPhotoStep],
+                                  onPhotoCaptured = {
+                                      if (currentPhotoStep < standardOrthoPhotoSeries.size - 1) {
+                                          currentPhotoStep++
+                                      } else {
+                                          currentScreen = "billing"
+                                      }
+                                  }
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build Debug APK
+        run: |
+          gradle wrapper --gradle-version 8.4
+          ./gradlew assembleDebug
+
+      - name: Upload APK File
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrthoApp-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
